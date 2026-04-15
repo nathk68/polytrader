@@ -78,8 +78,18 @@ Réponds en JSON uniquement."""
     }
 
     try:
-        resp = requests.post(ANTHROPIC_API_URL, json=payload, headers=headers, timeout=45)
-        resp.raise_for_status()
+        for attempt in range(3):
+            resp = requests.post(ANTHROPIC_API_URL, json=payload, headers=headers, timeout=60)
+            if resp.status_code == 429:
+                wait = 20 * (attempt + 1)
+                logger.warning(f"Rate limit Claude, attente {wait}s (tentative {attempt+1}/3)")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            logger.error("Rate limit Claude persistant après 3 tentatives")
+            return None
         data = resp.json()
 
         text_blocks = [
@@ -129,7 +139,7 @@ def batch_analyze(opportunities: list[dict], max_analyses: int = 5) -> list[dict
 
     for i, opp in enumerate(opportunities[:max_analyses]):
         if i > 0:
-            time.sleep(3)
+            time.sleep(12)
 
         analysis = analyze_market(
             question=opp["question"],
