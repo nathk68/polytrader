@@ -3,15 +3,12 @@ Trader — Connexion au CLOB Polymarket et exécution des ordres
 """
 import logging
 from typing import Optional
-from config import CLOB_HOST, PRIVATE_KEY, POLYGON_RPC
+from config import CLOB_HOST, PRIVATE_KEY, BANKROLL_USDC
 
 logger = logging.getLogger(__name__)
 
-_client = None
-
 
 def init_client():
-    global _client
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.constants import POLYGON
@@ -25,14 +22,11 @@ def init_client():
             chain_id=POLYGON,
         )
 
-        # Dérivation clé API L2
         api_creds = client.create_or_derive_api_creds()
         client.set_api_creds(api_creds)
 
         wallet = client.get_address()
         logger.info(f"✅ Client CLOB initialisé | Wallet: {wallet}")
-
-        _client = client
         return client
 
     except ImportError:
@@ -45,34 +39,28 @@ def init_client():
 
 def get_usdc_balance(client) -> float:
     try:
-        # Méthode correcte selon la version actuelle du SDK
-        data = client.get_balance_allowance(
-            params={"asset_type": "USDC"}
-        )
+        # Appel sans paramètres — la version actuelle du SDK ne prend pas de params ici
+        data = client.get_balance_allowance()
+        # Selon la version du SDK, balance peut être en USDC ou en micro-USDC
         balance = float(data.get("balance", 0))
-        # Le SDK retourne déjà en USDC (pas en micro-unités selon la version)
-        # Si la valeur semble aberrante (>1000000), diviser par 1e6
         if balance > 100000:
             balance = balance / 1e6
         logger.info(f"💰 Balance USDC: {balance:.2f}$")
         return balance
     except Exception as e:
-        logger.error(f"Erreur récupération balance: {e}")
-        # Fallback : retourne le bankroll config pour ne pas bloquer
-        from config import BANKROLL_USDC
-        logger.warning(f"Fallback balance: {BANKROLL_USDC}$")
+        logger.warning(f"Balance non récupérable ({e}) — fallback config: {BANKROLL_USDC}$")
         return BANKROLL_USDC
 
 
 def get_open_positions(client) -> list[dict]:
     try:
-        # L'API CLOB expose les trades, pas directement les positions
-        # On récupère les trades ouverts via get_trades
         trades = client.get_trades()
-        if trades is None:
+        if not trades:
             return []
-        # Filtre les trades non résolus
-        open_trades = [t for t in trades if t.get("status", "") not in ("RESOLVED", "CANCELLED")]
+        open_trades = [
+            t for t in trades
+            if t.get("status", "") not in ("RESOLVED", "CANCELLED", "REDEEMED")
+        ]
         logger.info(f"📊 {len(open_trades)} trades ouverts")
         return open_trades
     except Exception as e:
@@ -85,7 +73,6 @@ def place_market_order(
     token_id: str,
     side: str,
     amount_usdc: float,
-    slippage: float = 0.02,
     dry_run: bool = True
 ) -> Optional[dict]:
     try:
@@ -100,7 +87,7 @@ def place_market_order(
                 f"[DRY RUN] 📝 Ordre simulé: {side} {amount_usdc:.2f}$ "
                 f"sur token {token_id[:20]}..."
             )
-            return {"status": "dry_run", "side": side, "amount_usdc": amount_usdc, "token_id": token_id}
+            return {"status": "dry_run", "side": side, "amount_usdc": amount_usdc}
 
         order_args = MarketOrderArgs(token_id=token_id, amount=amount_raw, side=side_const)
         signed_order = client.create_market_order(order_args)
@@ -145,8 +132,7 @@ def check_and_close_positions(client, dry_run: bool = True):
         current_price = float(pos.get("price", 0))
         avg_price = float(pos.get("avgPrice", current_price))
         pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0
-
         if pnl_pct >= 0.50:
-            logger.info(f"🎯 Take Profit: {pos.get('asset_id','')[:20]} | PnL: +{pnl_pct:.1%}")
+            logger.info(f"🎯 Take Profit: PnL: +{pnl_pct:.1%}")
         elif pnl_pct <= -0.30:
-            logger.warning(f"🛑 Stop Loss: {pos.get('asset_id','')[:20]} | PnL: {pnl_pct:.1%}")
+            logger.warning(f"🛑 Stop Loss: PnL: {pnl_pct:.1%}")
