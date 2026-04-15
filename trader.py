@@ -39,9 +39,10 @@ def init_client():
 
 def get_usdc_balance(client) -> float:
     try:
-        # Appel sans paramètres — la version actuelle du SDK ne prend pas de params ici
-        data = client.get_balance_allowance()
-        # Selon la version du SDK, balance peut être en USDC ou en micro-USDC
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        data = client.get_balance_allowance(
+            params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
         balance = float(data.get("balance", 0))
         if balance > 100000:
             balance = balance / 1e6

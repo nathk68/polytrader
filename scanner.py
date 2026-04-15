@@ -23,7 +23,7 @@ def fetch_active_markets(limit: int = 200) -> list[dict]:
             data = resp.json()
             markets = data if isinstance(data, list) else data.get("data", data.get("markets", []))
             if markets:
-                logger.info(f"✅ {len(markets)} marchés récupérés depuis {url}")
+                logger.info(f"✅ {len(markets)} marchés récupérés")
                 return markets
         except Exception as e:
             logger.warning(f"Erreur fetch {url}: {e}")
@@ -71,14 +71,14 @@ def scan_opportunities() -> list[dict]:
     if not markets:
         return []
 
-    stats = {"total": len(markets), "inactive": 0, "no_expiry": 0, "expiry_too_far": 0,
-             "low_volume": 0, "not_binary": 0, "price_out_of_range": 0, "spread_too_high": 0, "passed": 0}
+    stats = {"total": len(markets), "inactive": 0, "no_expiry": 0, "trop_loin": 0,
+             "low_volume": 0, "no_tokens": 0, "prix_hors_range": 0, "spread_trop_haut": 0, "passed": 0}
 
-    # Debug : aperçu des expiries et volumes pour calibrer
+    # Debug : aperçu expiries et volumes
     expiries = []
     for m in markets[:30]:
-        end_date = m.get("endDateIso") or m.get("endDate") or m.get("resolutionTime")
-        d = days_until_expiry(end_date)
+        end = m.get("endDateIso") or m.get("endDate") or m.get("resolutionTime")
+        d = days_until_expiry(end)
         if d and d > 0:
             expiries.append(d)
     if expiries:
@@ -102,7 +102,7 @@ def scan_opportunities() -> list[dict]:
             stats["no_expiry"] += 1
             continue
         if days_left > EXPIRY_WINDOW_DAYS:
-            stats["expiry_too_far"] += 1
+            stats["trop_loin"] += 1
             continue
 
         volume_24h = float(market.get("volume24hr", market.get("volume", 0)))
@@ -110,11 +110,42 @@ def scan_opportunities() -> list[dict]:
             stats["low_volume"] += 1
             continue
 
-        tokens = market.get("tokens", market.get("outcomes", []))
+        # Accepte tous les marchés avec au moins 2 outcomes (pas uniquement binaires)
+        tokens_raw = market.get("tokens", [])
+        if not tokens_raw:
+            # Gamma API: outcomes peut être une liste de strings ou une string JSON
+            outcomes_raw = market.get("outcomes", [])
+            if isinstance(outcomes_raw, str):
+                import json as _json
+                try:
+                    outcomes_raw = _json.loads(outcomes_raw)
+                except Exception:
+                    outcomes_raw = []
+            prices_raw = market.get("outcomePrices", [])
+            if isinstance(prices_raw, str):
+                import json as _json
+                try:
+                    prices_raw = _json.loads(prices_raw)
+                except Exception:
+                    prices_raw = []
+            tokens_raw = [
+                {
+                    "outcome": str(o),
+                    "price": float(prices_raw[i]) if i < len(prices_raw) else 0.0,
+                    "token_id": "",
+                }
+                for i, o in enumerate(outcomes_raw)
+            ]
+        # Normalise au cas où certains tokens seraient déjà des strings
+        tokens = []
+        for t in tokens_raw:
+            if isinstance(t, str):
+                tokens.append({"outcome": t, "price": 0.0, "token_id": ""})
+            else:
+                tokens.append(t)
 
-        # Accepte les marchés à 2+ outcomes, pas seulement binaires
         if len(tokens) < 2:
-            stats["not_binary"] += 1
+            stats["no_tokens"] += 1
             continue
 
         added = False
@@ -122,6 +153,7 @@ def scan_opportunities() -> list[dict]:
             outcome = token.get("outcome", token.get("title", ""))
             price = float(token.get("price", token.get("probability", 0)))
 
+            # Zone cible : outcomes assez probables mais pas certains
             if not (0.55 <= price <= 0.97):
                 continue
 
@@ -129,17 +161,19 @@ def scan_opportunities() -> list[dict]:
             orderbook = fetch_orderbook(token_id) if token_id else None
             spread = get_spread(orderbook) if orderbook else 0.03
 
-            if spread > 0.08:
-                stats["spread_too_high"] += 1
+            if spread > 0.10:   # Un peu plus permissif
+                stats["spread_trop_haut"] += 1
                 continue
 
             score = 0.0
             if days_left <= 1:   score += 40
             elif days_left <= 3: score += 30
-            elif days_left <= 7: score += 15
+            elif days_left <= 7: score += 20
+            elif days_left <= 14: score += 10
             if volume_24h >= 50000:   score += 30
             elif volume_24h >= 10000: score += 20
             elif volume_24h >= 1000:  score += 10
+            elif volume_24h >= 500:   score += 5
 
             opportunities.append({
                 "question":      market.get("question", market.get("title", "")),
@@ -157,22 +191,16 @@ def scan_opportunities() -> list[dict]:
             })
             stats["passed"] += 1
             added = True
-            break
+            break  # Un token par marché pour le pré-filtre
 
-        if not added and not stats.get("spread_too_high"):
-            stats["price_out_of_range"] += 1
+        if not added and stats["spread_trop_haut"] == 0:
+            stats["prix_hors_range"] += 1
 
     logger.info(
-        f"🔍 Filtres: total={stats['total']} | "
-        f"inactif={stats['inactive']} | "
-        f"no_expiry={stats['no_expiry']} | "
-        f"trop_loin={stats['expiry_too_far']} | "
-        f"faible_vol={stats['low_volume']} | "
-        f"non_binaire={stats['not_binary']} | "
-        f"prix_hors_range={stats['price_out_of_range']} | "
-        f"spread_élevé={stats['spread_too_high']} | "
-        f"✅ passés={stats['passed']}"
+        f"🔍 Filtres: total={stats['total']} | inactif={stats['inactive']} | "
+        f"trop_loin={stats['trop_loin']} | low_vol={stats['low_volume']} | "
+        f"no_tokens={stats['no_tokens']} | prix_hors_range={stats['prix_hors_range']} | "
+        f"spread_haut={stats['spread_trop_haut']} | ✅ passés={stats['passed']}"
     )
     opportunities.sort(key=lambda x: x["score"], reverse=True)
-    logger.info(f"🎯 {len(opportunities)} opportunités envoyées à Claude")
     return opportunities
