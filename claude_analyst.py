@@ -5,13 +5,15 @@ et estimer une probabilité fondée sur des données réelles.
 """
 import json
 import logging
+import os
 import requests
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-5"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 ANALYST_SYSTEM_PROMPT = """Tu es un expert en marchés de prédiction, spécialisé sur Polymarket.
 Tu analyses des marchés et estimes des probabilités avec une précision maximale.
@@ -68,8 +70,14 @@ Réponds en JSON uniquement."""
         "messages": [{"role": "user", "content": user_prompt}],
     }
 
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
     try:
-        resp = requests.post(ANTHROPIC_API_URL, json=payload, timeout=45)
+        resp = requests.post(ANTHROPIC_API_URL, json=payload, headers=headers, timeout=45)
         resp.raise_for_status()
         data = resp.json()
 
