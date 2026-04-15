@@ -6,6 +6,7 @@ et estimer une probabilité fondée sur des données réelles.
 import json
 import logging
 import os
+import time
 import requests
 from typing import Optional
 
@@ -126,7 +127,10 @@ def batch_analyze(opportunities: list[dict], max_analyses: int = 5) -> list[dict
 
     logger.info(f"🧠 Analyse Claude sur {min(len(opportunities), max_analyses)} marchés...")
 
-    for opp in opportunities[:max_analyses]:
+    for i, opp in enumerate(opportunities[:max_analyses]):
+        if i > 0:
+            time.sleep(3)
+
         analysis = analyze_market(
             question=opp["question"],
             outcome=opp["outcome"],
