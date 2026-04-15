@@ -172,7 +172,11 @@ def batch_analyze(opportunities: list[dict], max_analyses: int = 5) -> list[dict
         opp["score"] = _recompute_score(opp)
         enriched.append(opp)
 
-    tradeable = [o for o in enriched if o.get("should_trade") and o.get("edge", 0) > 0.05]
+        if opp.get("should_trade") and real_edge > 0:
+            logger.info("🎯 Trade validé — arrêt immédiat des analyses")
+            break
+
+    tradeable = [o for o in enriched if o.get("should_trade") and o.get("edge", 0) > 0]
     tradeable.sort(key=lambda x: x["score"], reverse=True)
 
     logger.info(f"✅ {analyzed} analyses | {len(tradeable)} opportunités validées")

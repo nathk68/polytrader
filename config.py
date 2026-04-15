@@ -22,7 +22,7 @@ MAX_PROB = float(os.getenv("MAX_PROB", "0.97"))
 
 # === STRATEGIES ===
 EXPIRY_WINDOW_DAYS = int(os.getenv("EXPIRY_WINDOW_DAYS", "30"))  # Élargi à 30 jours
-SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
+SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))
 
 # === LOGGING ===
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
