@@ -1,22 +1,12 @@
 """
-Claude Analyst — Le cerveau du bot.
-Utilise l'API Claude + web_search pour analyser chaque marché
-et estimer une probabilité fondée sur des données réelles.
+Claude Analyst — Génère les prompts d'analyse pour chaque opportunité.
+Les prompts sont loggés pour analyse manuelle via claude.ai.
 """
-import json
 import logging
-import os
-import time
-import requests
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-sonnet-4-5"
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-
-ANALYST_SYSTEM_PROMPT = """Tu es un expert en marchés de prédiction, spécialisé sur Polymarket.
+SYSTEM_PROMPT = """Tu es un expert en marchés de prédiction, spécialisé sur Polymarket.
 Tu analyses des marchés et estimes des probabilités avec une précision maximale.
 
 Pour chaque marché, tu dois :
@@ -38,18 +28,13 @@ Format exact :
   "reasoning": "Explication courte et factuelle (2-3 phrases max)",
   "key_signals": ["signal 1", "signal 2", "signal 3"],
   "should_trade": true | false,
-  "risk_flags": ["flag éventuel"] 
+  "risk_flags": ["flag éventuel"]
 }"""
 
 
-def analyze_market(
-    question: str,
-    outcome: str,
-    current_price: float,
-    days_left: float,
-    volume_24h: float,
-) -> Optional[dict]:
-    user_prompt = f"""Analyse ce marché Polymarket et estime la probabilité que l'outcome se réalise.
+def build_user_prompt(question: str, outcome: str, current_price: float,
+                      days_left: float, volume_24h: float) -> str:
+    return f"""Analyse ce marché Polymarket et estime la probabilité que l'outcome se réalise.
 
 MARCHÉ : {question}
 OUTCOME À ÉVALUER : {outcome}
@@ -63,85 +48,27 @@ Si notre estimation est > {current_price:.2%} + 6%, le trade est intéressant.
 
 Réponds en JSON uniquement."""
 
-    payload = {
-        "model": MODEL,
-        "max_tokens": 1000,
-        "system": ANALYST_SYSTEM_PROMPT,
-        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
-        "messages": [{"role": "user", "content": user_prompt}],
-    }
 
-    headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
+def log_prompts_for_manual_analysis(opportunities: list[dict], max_prompts: int = 5):
+    """Affiche les prompts prêts à copier-coller dans claude.ai."""
+    top = opportunities[:max_prompts]
+    if not top:
+        logger.info("😴 Aucune opportunité à analyser ce cycle")
+        return
 
-    try:
-        for attempt in range(3):
-            resp = requests.post(ANTHROPIC_API_URL, json=payload, headers=headers, timeout=60)
-            if resp.status_code == 429:
-                wait = 20 * (attempt + 1)
-                logger.warning(f"Rate limit Claude, attente {wait}s (tentative {attempt+1}/3)")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            break
-        else:
-            logger.error("Rate limit Claude persistant après 3 tentatives")
-            return None
-        data = resp.json()
+    logger.info("\n" + "█" * 60)
+    logger.info(f"  📋 {len(top)} PROMPTS À ANALYSER MANUELLEMENT SUR claude.ai")
+    logger.info("█" * 60)
+    logger.info("  ► Copie le SYSTEM PROMPT une seule fois dans le projet Claude,")
+    logger.info("    puis envoie chaque USER PROMPT séparément.\n")
 
-        text_blocks = [
-            block["text"]
-            for block in data.get("content", [])
-            if block.get("type") == "text"
-        ]
+    logger.info("━" * 60)
+    logger.info("  SYSTEM PROMPT (à mettre dans les instructions du projet) :")
+    logger.info("━" * 60)
+    logger.info(SYSTEM_PROMPT)
 
-        if not text_blocks:
-            logger.warning(f"Pas de réponse texte de Claude pour: {question[:50]}")
-            return None
-
-        raw_text = text_blocks[-1].strip()
-
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-        raw_text = raw_text.strip()
-
-        analysis = json.loads(raw_text)
-
-        logger.info(
-            f"🧠 Claude: {outcome[:30]} | "
-            f"Est: {analysis.get('prob_estimate', 0):.2%} vs Mkt: {current_price:.2%} | "
-            f"Confiance: {analysis.get('confidence','?')} | "
-            f"Trade: {'✅' if analysis.get('should_trade') else '❌'}"
-        )
-        return analysis
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Erreur parsing JSON Claude: {e}")
-        return None
-    except requests.RequestException as e:
-        logger.error(f"Erreur API Claude: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Erreur inattendue: {e}")
-        return None
-
-
-def batch_analyze(opportunities: list[dict], max_analyses: int = 5) -> list[dict]:
-    enriched = []
-    analyzed = 0
-
-    logger.info(f"🧠 Analyse Claude sur {min(len(opportunities), max_analyses)} marchés...")
-
-    for i, opp in enumerate(opportunities[:max_analyses]):
-        if i > 0:
-            time.sleep(12)
-
-        analysis = analyze_market(
+    for i, opp in enumerate(top):
+        user_prompt = build_user_prompt(
             question=opp["question"],
             outcome=opp["outcome"],
             current_price=opp["price"],
@@ -149,78 +76,18 @@ def batch_analyze(opportunities: list[dict], max_analyses: int = 5) -> list[dict
             volume_24h=opp["volume_24h"],
         )
 
-        if analysis is None:
-            opp["claude_analyzed"] = False
-            opp["should_trade"] = False
-            enriched.append(opp)
-            continue
+        logger.info("\n" + "━" * 60)
+        logger.info(
+            f"  USER PROMPT #{i+1} — {opp['outcome'][:40]} "
+            f"@ {opp['price']:.0%} | {opp['days_left']:.0f}j | vol ${opp['volume_24h']:,.0f}"
+        )
+        logger.info("━" * 60)
+        logger.info(user_prompt)
 
-        analyzed += 1
-        claude_prob = float(analysis.get("prob_estimate", opp["prob_estimate"]))
-        real_edge = round(claude_prob - opp["price"], 4)
-
-        opp.update({
-            "claude_analyzed":   True,
-            "prob_estimate":     claude_prob,
-            "edge":              real_edge,
-            "claude_confidence": analysis.get("confidence", "low"),
-            "claude_reasoning":  analysis.get("reasoning", ""),
-            "claude_signals":    analysis.get("key_signals", []),
-            "should_trade":      analysis.get("should_trade", False),
-            "risk_flags":        analysis.get("risk_flags", []),
-        })
-        opp["score"] = _recompute_score(opp)
-        enriched.append(opp)
-
-        if opp.get("should_trade") and real_edge > 0:
-            logger.info("🎯 Trade validé — arrêt immédiat des analyses")
-            break
-
-    tradeable = [o for o in enriched if o.get("should_trade") and o.get("edge", 0) > 0]
-    tradeable.sort(key=lambda x: x["score"], reverse=True)
-
-    logger.info(f"✅ {analyzed} analyses | {len(tradeable)} opportunités validées")
-    return tradeable
-
-
-def _recompute_score(opp: dict) -> float:
-    base_score = opp.get("score", 0)
-    confidence = opp.get("claude_confidence", "low")
-    edge = opp.get("edge", 0)
-    days_left = opp.get("days_left", 99)
-    conf_mult = {"high": 1.5, "medium": 1.0, "low": 0.4}.get(confidence, 0.4)
-    return round(
-        base_score * conf_mult
-        + edge * 200
-        + (20 if days_left <= 3 else 5)
-        - (len(opp.get("risk_flags", [])) * 10),
-        2
-    )
+    logger.info("\n" + "█" * 60)
+    logger.info("  ℹ️  Pour trader manuellement : polymarket.com")
+    logger.info("█" * 60 + "\n")
 
 
 def log_analysis_report(opportunities: list[dict]):
-    if not opportunities:
-        logger.info("📊 Aucune opportunité validée par Claude ce cycle")
-        return
-
-    logger.info("\n" + "═" * 60)
-    logger.info("  📊 RAPPORT ANALYSE CLAUDE")
-    logger.info("═" * 60)
-
-    for i, opp in enumerate(opportunities[:5]):
-        logger.info(
-            f"\n  #{i+1} [{opp.get('strategy','?')}] "
-            f"Confiance: {opp.get('claude_confidence','?').upper()}"
-        )
-        logger.info(f"  Q: {opp['question'][:65]}")
-        logger.info(f"  Outcome : {opp['outcome']}")
-        logger.info(f"  Prix mkt: {opp['price']:.2%} → Claude: {opp['prob_estimate']:.2%} (edge: {opp['edge']:+.2%})")
-        logger.info(f"  Raison  : {opp.get('claude_reasoning','N/A')}")
-        signals = opp.get("claude_signals", [])
-        if signals:
-            logger.info(f"  Signaux : {' | '.join(signals[:3])}")
-        flags = opp.get("risk_flags", [])
-        if flags:
-            logger.warning(f"  ⚠️  Risques: {', '.join(flags)}")
-
-    logger.info("\n" + "═" * 60)
+    pass
